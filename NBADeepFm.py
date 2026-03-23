@@ -122,29 +122,32 @@ class NBATransformer(nn.Module, PyTorchModelHubMixin):
         # PI-to-Player Interaction (Cross-Attention)
         # This allows PI (shooter, dist, etc) to "query" the player lineup
         self.cross_attn = nn.MultiheadAttention(embed_dim, num_heads=4, batch_first=True)
-        
 
-        self.priv_info_proj = nn.Linear(6, embed_dim) # Project priv info to same dim as player embeds
+        # self.priv_info_proj = nn.Linear(6, embed_dim) # Project priv info to same dim as player embeds
 
         # Output: 4 classes (0, 1, 2, 3, or 4 points)
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim, 64),
             nn.ReLU(),
+            # nn.Linear(64, 64),
+            # nn.ReLU(),
             nn.Linear(64, 5) 
         )
 
         
 
-    def forward(self, lineup_ids, role_ids, pi_stats):
+    def forward(self, lineup_ids, role_ids):
         
         lineup_embeds = self.embedding(lineup_ids) # Shape: [10, embed_dim]
         lineup_feat = self.self_attn(lineup_embeds)
 
         role_embeds = self.embedding(role_ids) # Shape: [Batch, 4, embed_dim]
-        stat_embeds = self.priv_info_proj(pi_stats) # Shape: [Batch, embed_dim]
-        stat_embeds = stat_embeds.unsqueeze(1) # Shape: [Batch, 1, embed_dim]
+        # stat_embeds = self.priv_info_proj(pi_stats) # Shape: [Batch, embed_dim]
+        # stat_embeds = stat_embeds.unsqueeze(1) # Shape: [Batch, 1, embed_dim]
         
-        context = torch.cat([stat_embeds, role_embeds], dim=1)
+        # context = torch.cat([stat_embeds, role_embeds], dim=1)
+
+        context = role_embeds # For now just use role embeds as context for cross attention cuz of information leakage
 
 
         attn_out, _ = self.cross_attn(query=context, key=lineup_feat, value=lineup_feat)
@@ -161,9 +164,6 @@ class NBATransformerLearner(nn.Module, PyTorchModelHubMixin):
         """
         Same architecture just without priviliged info cross attention
         """
-        
-
-        
         # 1. Latent Space (Shared for both components)
         self.embedding = nn.Embedding(num_players, embed_dim)
         
