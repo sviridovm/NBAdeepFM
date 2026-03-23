@@ -109,50 +109,41 @@ class NBADeepFM(nn.Module):
 
 
 class NBATransformer(nn.Module, PyTorchModelHubMixin):
-    def __init__(self, num_players, embed_dim=32, num_heads=4, num_layers=2):
+    def __init__(self, num_players, embed_dim=32, num_heads=8, num_layers=3):
         super(NBATransformer, self).__init__()
-        
-        # 1. Latent Space (Shared for both components)
-        self.embedding = nn.Embedding(num_players, embed_dim)
-        
-        
-        # Player-to-Player Interaction (Self-Attention)
-        self.self_attn = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=4, batch_first=True)
-        
-        # PI-to-Player Interaction (Cross-Attention)
-        # This allows PI (shooter, dist, etc) to "query" the player lineup
-        self.cross_attn = nn.MultiheadAttention(embed_dim, num_heads=4, batch_first=True)
+        self.embedding = nn.Embedding(num_players + 1, embed_dim)
+        self.layernorm = nn.LayerNorm(embed_dim)        
 
-        # self.priv_info_proj = nn.Linear(6, embed_dim) # Project priv info to same dim as player embeds
+        # Self-Attention: Lineup interactions (The "Environment")
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
+        self.lineup_encoder = nn.TransformerEncoder(encoder_layer, num_layers=3)
+        
+        
+        # cross attention for shooter, assister, defender to attend to the lineup context   
+        self.role_attn = nn.MultiheadAttention(embed_dim, num_heads=4, batch_first=True)
+        
+        # Output Heads
+        self.id_classifier = nn.Linear(embed_dim, num_players) # For Masked Identity
 
         # Output: 4 classes (0, 1, 2, 3, or 4 points)
-        self.classifier = nn.Sequential(
+        self.point_classifier = nn.Sequential(
             nn.Linear(embed_dim, 64),
             nn.ReLU(),
-            # nn.Linear(64, 64),
-            # nn.ReLU(),
             nn.Linear(64, 5) 
         )
-
         
 
     def forward(self, lineup_ids, role_ids):
+        lineup_nodes = self.lineup_encoder(self.norm(self.embedding(lineup_ids)))
+        role_query = self.norm(self.embedding(role_ids))
         
-        lineup_embeds = self.embedding(lineup_ids) # Shape: [10, embed_dim]
-        lineup_feat = self.self_attn(lineup_embeds)
-
-        role_embeds = self.embedding(role_ids) # Shape: [Batch, 4, embed_dim]
-        # stat_embeds = self.priv_info_proj(pi_stats) # Shape: [Batch, embed_dim]
-        # stat_embeds = stat_embeds.unsqueeze(1) # Shape: [Batch, 1, embed_dim]
+        attn_out, _ = self.role_attn(query=role_query, key=lineup_nodes, value=lineup_nodes)
         
-        # context = torch.cat([stat_embeds, role_embeds], dim=1)
-
-        context = role_embeds # For now just use role embeds as context for cross attention cuz of information leakage
-
-
-        attn_out, _ = self.cross_attn(query=context, key=lineup_feat, value=lineup_feat)
+        points_logits = self.point_classifier(attn_out.mean(dim=1))
         
-        return self.classifier(attn_out.mean(dim=1))
+        id_logits = self.id_classifier(attn_out[:, 0, :])
+        
+        return points_logits, id_logits
     
     
     
