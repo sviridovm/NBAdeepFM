@@ -141,7 +141,9 @@ class NBATransformer(nn.Module, PyTorchModelHubMixin):
         lineup_feat = self.self_attn(lineup_embeds)
 
         role_embeds = self.embedding(role_ids) # Shape: [Batch, 4, embed_dim]
-        stat_embeds = self.priv_info_proj(pi_stats) # Shape: [1, embed_dim]
+        stat_embeds = self.priv_info_proj(pi_stats) # Shape: [Batch, embed_dim]
+        stat_embeds = stat_embeds.unsqueeze(1) # Shape: [Batch, 1, embed_dim]
+        
         context = torch.cat([stat_embeds, role_embeds], dim=1)
 
 
