@@ -134,8 +134,8 @@ class NBATransformer(nn.Module, PyTorchModelHubMixin):
         
 
     def forward(self, lineup_ids, role_ids):
-        lineup_nodes = self.lineup_encoder(self.norm(self.embedding(lineup_ids)))
-        role_query = self.norm(self.embedding(role_ids))
+        lineup_nodes = self.lineup_encoder(self.layernorm(self.embedding(lineup_ids)))
+        role_query = self.layernorm(self.embedding(role_ids))
         
         attn_out, _ = self.role_attn(query=role_query, key=lineup_nodes, value=lineup_nodes)
         
