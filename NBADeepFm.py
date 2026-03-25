@@ -61,7 +61,8 @@ class NBADeepFM(nn.Module):
         super(NBADeepFM, self).__init__()
         
         # 1. Latent Space (Shared for both components)
-        self.embedding = nn.Embedding(num_players, embed_dim)
+        self.player_embedding = nn.Embedding(num_players, embed_dim)
+        
         
         # EmbeddingBag handles sum pooling for lineups automatically
         self.lineup_pooling = nn.EmbeddingBag(num_players, embed_dim, mode='sum')
@@ -89,7 +90,7 @@ class NBADeepFM(nn.Module):
         action_roles = torch.stack([shot_cycle.shooting_player, shot_cycle.assisting_player, shot_cycle.defending_player], dim=1) # Shape: [Batch, 3]
 
         # action_roles shape: [Batch, 3] -> (Shooter, Assister, Defender)
-        role_embeds = self.embedding(action_roles) # Shape: [Batch, 3, embed_dim]
+        role_embeds = self.player_embedding(action_roles) # Shape: [Batch, 3, embed_dim]
         role_flattened = role_embeds.view(role_embeds.size(0), -1)
         
         is_putback_embed = torch.tensor(shot_cycle.is_putback, dtype=torch.float).unsqueeze(1) # Shape: [Batch, 1]
@@ -109,41 +110,88 @@ class NBADeepFM(nn.Module):
 
 
 class NBATransformer(nn.Module, PyTorchModelHubMixin):
-    def __init__(self, num_players, embed_dim=32, num_heads=8, num_layers=3):
+    def __init__(self, num_players, embed_dim=64, num_heads=8, num_layers=3):
         super(NBATransformer, self).__init__()
-        self.embedding = nn.Embedding(num_players + 1, embed_dim)
+        self.player_embedding = nn.Embedding(num_players + 1, embed_dim)
+        self.putback_embedding = nn.Embedding(2, embedding_dim=embed_dim)
+        self.freethrow_embedding = nn.Embedding(2, embedding_dim=embed_dim)
+        
+        self.hwp_proj_dim = 8
+        
+        self.distance_mlp = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.GELU(),         # GELU is great here as it allows a smooth, non-linear curve
+            nn.Linear(16, embed_dim)
+        )
+        
+        self.hwp_projection = nn.Linear(3, self.hwp_proj_dim)
+        
+        self.hwp_mlp = nn.Sequential(
+            nn.Linear(self.hwp_proj_dim, 16),
+            nn.GELU(),
+            nn.Linear(16, embed_dim)
+        )
+        
+        
         self.layernorm = nn.LayerNorm(embed_dim)        
 
         # Self-Attention: Lineup interactions (The "Environment")
         encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
         self.lineup_encoder = nn.TransformerEncoder(encoder_layer, num_layers=3)
-        
-        
         # cross attention for shooter, assister, defender to attend to the lineup context   
         self.role_attn = nn.MultiheadAttention(embed_dim, num_heads=4, batch_first=True)
         
         # Output Heads
         self.id_classifier = nn.Linear(embed_dim, num_players) # For Masked Identity
 
-        # Output: 4 classes (0, 1, 2, 3, or 4 points)
-        self.point_classifier = nn.Sequential(
-            nn.Linear(embed_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 5) 
-        )
+    def forward(self, 
+                lineup_ids,
+                lineup_hwps,
+                role_ids,
+                role_hwps,
+                is_putback,
+                is_freethrow,
+                shot_distance,
+                mask_indices
+                ):
+        lineup_base_embeds = self.player_embedding(lineup_ids)
         
+        lineup_projs = self.hwp_projection(lineup_hwps)
+        lineup_hwp_embeds = self.hwp_mlp(lineup_projs)
 
-    def forward(self, lineup_ids, role_ids):
-        lineup_nodes = self.lineup_encoder(self.layernorm(self.embedding(lineup_ids)))
-        role_query = self.layernorm(self.embedding(role_ids))
+        # concat hwp embeds to individual players
+        lineup_embeds = torch.stack([lineup_hwp_embeds, lineup_base_embeds], dim = 0)
+        lineup_embeds = torch.sum(lineup_embeds, dim=0)
+
+
+        lineup_nodes = self.lineup_encoder(self.layernorm(lineup_embeds))
+        # ----------
+        
+        shot_distance_embed = self.distance_mlp(shot_distance)
+        free_throw_embed = self.freethrow_embedding(is_freethrow)
+        putback_embed = self.putback_embedding(is_putback)
+        
+        play_context = torch.stack([shot_distance_embed, free_throw_embed, putback_embed], dim=0)
+        play_context = torch.sum(play_context, dim=0)
+
+        role_context = self.player_embedding(role_ids)
+        role_hwp_projs = self.hwp_projection(role_hwps)
+        role_hwp_embeds = self.hwp_mlp(role_hwp_projs)
+        
+        role_embeds = torch.stack([role_context, role_hwp_embeds,], dim=0)
+        role_embeds = torch.sum(role_embeds, dim=0)
+        role_embeds = role_embeds + play_context.unsqueeze(1)
+        
+        role_query = self.layernorm(role_embeds)
         
         attn_out, _ = self.role_attn(query=role_query, key=lineup_nodes, value=lineup_nodes)
+        batch_size = attn_out.size(0)
+        batch_indices = torch.arange(batch_size, device=attn_out.device)
+
+        masked_tokens = attn_out[batch_indices, mask_indices, :]        
+        id_logits = self.id_classifier(masked_tokens)        
         
-        points_logits = self.point_classifier(attn_out.mean(dim=1))
-        
-        id_logits = self.id_classifier(attn_out[:, 0, :])
-        
-        return points_logits, id_logits
+        return id_logits
     
     
     
