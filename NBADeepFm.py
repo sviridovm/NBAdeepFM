@@ -222,7 +222,7 @@ class NBATransformerPointsPredictor(nn.Module, PyTorchModelHubMixin):
 
 
         # predict prob of [0, 1 , 2, 3, 4]
-        self.point_classifier = nn.Sequential(
+        self.points_head = nn.Sequential(
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(0.1),
