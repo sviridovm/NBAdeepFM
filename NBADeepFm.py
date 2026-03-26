@@ -169,8 +169,8 @@ class NBATransformer(nn.Module, PyTorchModelHubMixin):
         
         shot_distance = shot_distance.unsqueeze(-1).float()
         shot_distance_embed = self.distance_mlp(shot_distance)
-        free_throw_embed = self.freethrow_embedding(is_freethrow.unsqueeze(-1).float())
-        putback_embed = self.putback_embedding(is_putback.unqueeze(-1).float())
+        free_throw_embed = self.freethrow_embedding(is_freethrow.unsqueeze(-1).long())
+        putback_embed = self.putback_embedding(is_putback.unqueeze(-1).long())
         
         play_context = torch.stack([shot_distance_embed, free_throw_embed, putback_embed], dim=0)
         play_context = torch.sum(play_context, dim=0)
