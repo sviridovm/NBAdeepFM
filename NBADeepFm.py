@@ -196,7 +196,53 @@ class NBATransformer(nn.Module, PyTorchModelHubMixin):
     
     
     
+
+class NBATransformerPointsPredictor(nn.Module, PyTorchModelHubMixin):
+    def __init__(self, pretrained_model, hidden_dim=64):
+        super(NBATransformerPointsPredictor, self).__init__()
+        
+        self.player_embedding = pretrained_model.player_embedding
+        self.hwp_mlp = pretrained_model.hwp_mlp
+        self.hwp_projection = pretrained_model.hwp_projection
+        self.layernorm = pretrained_model.layernorm
+
+
+        # predict prob of [0, 1 , 2, 3, 4]
+        self.point_classifier = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 5)
+        )
+
+    def forward(self, lineup_ids, lineup_hwps,):
+        lineup_base_embeds = self.player_embedding(lineup_ids)
+        
+        lineup_projs = self.hwp_projection(lineup_hwps)
+        lineup_hwp_embeds = self.hwp_mlp(lineup_projs)
+
+        # concat hwp embeds to individual players
+        lineup_embeds = torch.stack([lineup_hwp_embeds, lineup_base_embeds], dim = 0)
+        lineup_embeds = torch.sum(lineup_embeds, dim=0)
+        lineup_nodes = self.lineup_encoder(self.layernorm(lineup_embeds))
+
+        offense_nodes = lineup_nodes[:, :5, :]  # First 5 players [Batch, 5, hidden_dim]
+        defense_nodes = lineup_nodes[:, 5:, :]  # Last 5 players [Batch, 5, hidden_dim]
+        
+        offense_pooled = offense_nodes.mean(dim=1) # [Batch, hidden_dim]
+        defense_pooled = defense_nodes.mean(dim=1) # [Batch, hidden_dim]
+
+        matchup_vector = torch.cat([offense_pooled, defense_pooled], dim=-1) 
+
+        points_logits = self.points_head(matchup_vector)
+        
+        return points_logits
+
     
+
+
 class NBATransformerLearner(nn.Module, PyTorchModelHubMixin):
     def __init__(self, num_players, embed_dim=32, num_heads=4, num_layers=2):
         super(NBATransformerLearner, self).__init__()
