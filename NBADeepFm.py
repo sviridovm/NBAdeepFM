@@ -198,13 +198,27 @@ class NBATransformer(nn.Module, PyTorchModelHubMixin):
     
 
 class NBATransformerPointsPredictor(nn.Module, PyTorchModelHubMixin):
-    def __init__(self, pretrained_model, hidden_dim=64):
+    def __init__(self, num_players, embed_dim=64, num_heads=8, num_layers=3):
         super(NBATransformerPointsPredictor, self).__init__()
         
-        self.player_embedding = pretrained_model.player_embedding
-        self.hwp_mlp = pretrained_model.hwp_mlp
-        self.hwp_projection = pretrained_model.hwp_projection
-        self.layernorm = pretrained_model.layernorm
+        self.player_embedding = nn.Embedding(num_players + 1, embedding_dim=embed_dim)
+        self.putback_embedding = nn.Embedding(2, embedding_dim=embed_dim)
+        self.freethrow_embedding = nn.Embedding(2, embedding_dim=embed_dim)
+        
+        self.hwp_proj_dim = 8
+        self.hwp_projection = nn.Linear(3, self.hwp_proj_dim)
+        self.hwp_mlp = nn.Sequential(
+            nn.Linear(self.hwp_proj_dim, 16),
+            nn.GELU(),
+            nn.Linear(16, embed_dim)
+        )
+        
+        
+        self.layernorm = nn.LayerNorm(embed_dim)        
+
+        # Self-Attention: Lineup interactions (The "Environment")
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, batch_first=True)
+        self.lineup_encoder = nn.TransformerEncoder(encoder_layer, num_layers=3)
 
 
         # predict prob of [0, 1 , 2, 3, 4]
